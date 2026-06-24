@@ -113,7 +113,7 @@ def plot_history(history, path):
     fig.tight_layout()
     fig.savefig(path)
     plt.close(fig)
-
+# first model # working
 def main():
     print(f"Using device: {DEVICE}")
     train_transform, eval_transform = build_transforms()
