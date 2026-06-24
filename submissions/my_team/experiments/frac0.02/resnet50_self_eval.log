@@ -1,0 +1,13 @@
+Self-evaluation for arch=resnet50 fraction=0.02 epochs=1
+Timestamp: 2026-06-24T22:01:01
+
+  > Base (Clean)  : 0.0500
+  > Geometric     : 0.0500
+  > Color/Photo   : 0.0500
+  > Noise/Occlude : 0.0500
+  > AutoAugment   : 0.0500
+  > Ultimate Combo: 0.0500
+
+Base Accuracy:   0.0500
+Avg Stress Acc:  0.0500
+Final Score:     0.0500
