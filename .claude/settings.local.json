@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 dataset/split_dataset.py)",
+      "Bash(python3 -)",
+      "Bash(python3 -c \"from base_model import ImageNetSubset\")"
+    ]
+  }
+}
