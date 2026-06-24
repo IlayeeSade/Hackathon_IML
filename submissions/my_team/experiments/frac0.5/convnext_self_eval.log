@@ -1,0 +1,13 @@
+Self-evaluation for arch=convnext fraction=0.5 epochs=100
+Timestamp: 2026-06-24T22:44:15
+
+  > Base (Clean)  : 0.8700
+  > Geometric     : 0.7294
+  > Color/Photo   : 0.4356
+  > Noise/Occlude : 0.8219
+  > AutoAugment   : 0.8287
+  > Ultimate Combo: 0.2794
+
+Base Accuracy:   0.8700
+Avg Stress Acc:  0.6190
+Final Score:     0.7445

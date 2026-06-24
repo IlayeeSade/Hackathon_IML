@@ -1,0 +1,2 @@
+fraction,arch,train_best_val_acc,train_time_min,self_eval_base_acc,self_eval_avg_stress,self_eval_final_score
+0.5,convnext,0.864125,40.806303004423775,0.87,0.619,0.7444999999999999
