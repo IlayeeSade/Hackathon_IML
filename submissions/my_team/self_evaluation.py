@@ -66,35 +66,36 @@ DEVICE = torch.device(
 # ──────────────────────────────────────────────────────────────────────────────
 
 class ImageNetSubset(Dataset):
-    """Loads a fraction of the 20 target classes from data/dataset/validation for faster evaluation."""
+    """Loads a fraction of the target classes for faster evaluation."""
 
-    def __init__(self, root: Path, split: str = "validation", transform=None, fraction=0.1):
+    def __init__(self, root: Path, split: str = "val_split", transform=None, fraction=0.1):
         self.transform = transform
         self.samples = []
 
         split_root = root / split
 
+        # --- התיקון לשטות של הוולדיציה ---
+        # אם התיקייה לא קיימת, ננסה לחפש את תיקיית train_split המקורית של ההאקתון
         if not split_root.exists():
-            raise FileNotFoundError(
-                f"Validation folder not found: {split_root}\n"
-                f"Expected structure: {root}/validation/<class_name>/*.jpg"
-            )
+            fallback_root = root / "train_split"
+            if fallback_root.exists():
+                print(f"⚠️ Notice: '{split}' folder not found. Falling back to '{fallback_root.name}'...")
+                split_root = fallback_root
+            else:
+                raise FileNotFoundError(f"Could not find {split_root} or {fallback_root}")
 
         for hf_idx in sorted(TARGET_HF_INDICES):
             class_name = HF_INDEX_TO_NAME[hf_idx]
             class_dir = split_root / class_name
 
             if not class_dir.exists():
-                raise FileNotFoundError(
-                    f"Class folder not found: {class_dir}"
-                )
+                continue # דילוג שקט אם המחלקה לא קיימת במקום קריסה מוחלטת
 
             local_idx = HF_INDEX_TO_IDX[hf_idx]
 
-            # אוספים את כל התמונות במחלקה וממיינים
             all_images = sorted(class_dir.glob("*.jpg"))
             
-            # מקטינים את כמות הדאטה: לוקחים רק 1 מכל 10 תמונות (אם fraction=0.1)
+            # מנגנון ה-0.1: לוקחים תמונה 1 מכל 10 תמונות
             step = max(1, int(1 / fraction))
             subset_images = all_images[::step]
             

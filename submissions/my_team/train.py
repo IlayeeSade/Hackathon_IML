@@ -29,7 +29,7 @@ PLOT_OUTPUT = SCRIPT_DIR / "training_curves.png"
 TRAIN_SPLIT = "train_split"
 VAL_SPLIT = "val_split"
 
-BATCH_SIZE = 192
+BATCH_SIZE = 128
 EPOCHS = 50
 LEARNING_RATE = 1e-3
 WEIGHT_DECAY = 1e-4
@@ -93,7 +93,9 @@ def plot_history(history, path):
     ax_loss.set_title("Loss")
     ax_loss.legend()
 
-    ax_acc.plot(epochs, history["train_acc"], label="train")
+    ax_acc.plot(epochs, history["train_acc"], label="train (augmented)")
+    if "clean_train_acc" in history:
+        ax_acc.plot(epochs, history["clean_train_acc"], label="train (clean)")
     ax_acc.plot(epochs, history["val_acc"], label="val")
     ax_acc.set_xlabel("Epoch")
     ax_acc.set_ylabel("Accuracy")
@@ -111,6 +113,10 @@ def parse_args():
     parser.add_argument("--save-best", choices=["acc", "loss"], default="acc",
                          help="Checkpoint metric: keep the epoch with the highest val_acc (default) "
                               "or the lowest val_loss")
+    parser.add_argument("--eval-clean-train", action="store_true",
+                         help="Each epoch, also evaluate train_acc on train_split with eval "
+                              "(non-augmented) transforms, separate from the augmented train_acc "
+                              "computed during the training pass")
     return parser.parse_args()
 
 def main():
@@ -130,6 +136,11 @@ def main():
     )
     train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True, **loader_kwargs)
     val_loader = DataLoader(val_ds, batch_size=BATCH_SIZE, shuffle=False, **loader_kwargs)
+
+    clean_train_loader = None
+    if args.eval_clean_train:
+        clean_train_ds = ImageNetSubset(DATA_ROOT, TRAIN_SPLIT, transform=eval_transform)
+        clean_train_loader = DataLoader(clean_train_ds, batch_size=BATCH_SIZE, shuffle=False, **loader_kwargs)
 
     model = ModelArchitecture(num_classes=20).to(DEVICE)
 
@@ -159,6 +170,8 @@ def main():
               f"(new epochs must beat val_{args.save_best}={best_metric:.4f} to be saved)")
 
     history = {"train_loss": [], "train_acc": [], "val_loss": [], "val_acc": []}
+    if clean_train_loader is not None:
+        history["clean_train_acc"] = []
 
     for epoch in tqdm(range(1, EPOCHS + 1), desc="Epochs"):
         train_loss, train_acc = run_epoch(
@@ -173,6 +186,14 @@ def main():
         history["val_loss"].append(val_loss)
         history["val_acc"].append(val_acc)
 
+        clean_train_acc_str = ""
+        if clean_train_loader is not None:
+            _, clean_train_acc = run_epoch(
+                model, clean_train_loader, criterion, desc=f"Epoch {epoch}/{EPOCHS} [clean train]"
+            )
+            history["clean_train_acc"].append(clean_train_acc)
+            clean_train_acc_str = f" | clean_train_acc {clean_train_acc:.4f}"
+
         lr_before = optimizer.param_groups[0]["lr"]
         scheduler.step(val_loss)
         lr_after = optimizer.param_groups[0]["lr"]
@@ -180,7 +201,7 @@ def main():
         tqdm.write(
             f"Epoch {epoch:2d}/{EPOCHS} | "
             f"train_loss {train_loss:.4f} train_acc {train_acc:.4f} | "
-            f"val_loss {val_loss:.4f} val_acc {val_acc:.4f} | lr {lr_after:.2e}"
+            f"val_loss {val_loss:.4f} val_acc {val_acc:.4f}{clean_train_acc_str} | lr {lr_after:.2e}"
         )
         if lr_after < lr_before:
             tqdm.write(f"  > val_loss plateaued, reducing LR {lr_before:.2e} -> {lr_after:.2e}")
