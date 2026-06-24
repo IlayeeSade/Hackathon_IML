@@ -2,6 +2,7 @@ import argparse
 import os
 import sys
 from pathlib import Path
+import numpy as np
 
 import joblib
 import matplotlib
@@ -19,7 +20,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from base_model import ImageNetSubset
 from model import ModelArchitecture
-from augmentations import build_train_transforms, build_eval_transforms
+from augmentations import build_train_transforms, build_eval_transforms, apply_cutmix
 
 DATA_ROOT = PROJECT_ROOT / "dataset"
 OUTPUT = SCRIPT_DIR / "weights.joblib"
@@ -51,9 +52,15 @@ def run_epoch(model, loader, criterion, optimizer=None, scaler=None, desc=""):
         labels = labels.to(DEVICE, non_blocking=True)
 
         with torch.set_grad_enabled(is_training):
-            with torch.autocast(device_type=DEVICE.type, enabled=DEVICE.type == "cuda"):
-                logits = model(images)
-                loss = criterion(logits, labels)
+            if is_training and np.random.rand() < 0.5:
+                images, target_a, target_b, lam = apply_cutmix(images, labels)
+                with torch.autocast(device_type=DEVICE.type, enabled=DEVICE.type == "cuda"):
+                    logits = model(images)
+                    loss = lam * criterion(logits, target_a) + (1 - lam) * criterion(logits, target_b)
+            else:
+                with torch.autocast(device_type=DEVICE.type, enabled=DEVICE.type == "cuda"):
+                    logits = model(images)
+                    loss = criterion(logits, labels)
 
             if is_training:
                 optimizer.zero_grad()
@@ -100,6 +107,9 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--resume", action="store_true",
                          help=f"Load existing weights from {OUTPUT} before training instead of starting fresh")
+    parser.add_argument("--save-best", choices=["acc", "loss"], default="acc",
+                         help="Checkpoint metric: keep the epoch with the highest val_acc (default) "
+                              "or the lowest val_loss")
     return parser.parse_args()
 
 def main():
@@ -131,13 +141,21 @@ def main():
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
     scaler = torch.amp.GradScaler(device=DEVICE.type, enabled=DEVICE.type == "cuda")
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=2)
 
-    best_val_acc = 0.0
+    track_loss = args.save_best == "loss"
+    best_metric = float("inf") if track_loss else 0.0
     best_state = None
+
+    def is_better(val_loss, val_acc, best_metric):
+        return val_loss < best_metric if track_loss else val_acc > best_metric
+
     if args.resume:
-        _, best_val_acc = run_epoch(model, val_loader, criterion, desc="Resumed checkpoint [val]")
+        resumed_val_loss, resumed_val_acc = run_epoch(model, val_loader, criterion, desc="Resumed checkpoint [val]")
+        best_metric = resumed_val_loss if track_loss else resumed_val_acc
         best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
-        print(f"Resumed checkpoint val_acc={best_val_acc:.4f} (new epochs must beat this to be saved)")
+        print(f"Resumed checkpoint val_loss={resumed_val_loss:.4f} val_acc={resumed_val_acc:.4f} "
+              f"(new epochs must beat val_{args.save_best}={best_metric:.4f} to be saved)")
 
     history = {"train_loss": [], "train_acc": [], "val_loss": [], "val_acc": []}
 
@@ -154,19 +172,25 @@ def main():
         history["val_loss"].append(val_loss)
         history["val_acc"].append(val_acc)
 
+        lr_before = optimizer.param_groups[0]["lr"]
+        scheduler.step(val_loss)
+        lr_after = optimizer.param_groups[0]["lr"]
+
         tqdm.write(
             f"Epoch {epoch:2d}/{EPOCHS} | "
             f"train_loss {train_loss:.4f} train_acc {train_acc:.4f} | "
-            f"val_loss {val_loss:.4f} val_acc {val_acc:.4f}"
+            f"val_loss {val_loss:.4f} val_acc {val_acc:.4f} | lr {lr_after:.2e}"
         )
+        if lr_after < lr_before:
+            tqdm.write(f"  > val_loss plateaued, reducing LR {lr_before:.2e} -> {lr_after:.2e}")
 
-        if val_acc > best_val_acc:
-            best_val_acc = val_acc
+        if is_better(val_loss, val_acc, best_metric):
+            best_metric = val_loss if track_loss else val_acc
             best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
 
     final_state = best_state if best_state is not None else model.state_dict()
     joblib.dump(final_state, OUTPUT)
-    print(f"Saved weights to {OUTPUT} (best val_acc={best_val_acc:.4f})")
+    print(f"Saved weights to {OUTPUT} (best val_{args.save_best}={best_metric:.4f})")
 
     plot_history(history, PLOT_OUTPUT)
     print(f"Saved training curves to {PLOT_OUTPUT}")

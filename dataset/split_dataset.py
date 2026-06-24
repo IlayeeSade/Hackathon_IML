@@ -26,7 +26,7 @@ import random
 import shutil
 from pathlib import Path
 
-TRAIN_RATIO = 0.2  # fraction of each class's images assigned to the training split
+TRAIN_RATIO = 0.5  # fraction of each class's images assigned to the training split
 SEED = 42
 
 IMAGE_EXTENSIONS = ("*.jpg", "*.jpeg", "*.JPEG", "*.png")
