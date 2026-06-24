@@ -1,5 +1,5 @@
 """
-Splits dataset/train into a training subset and a validation subset.
+Splits dataset/train_original into a training subset and a validation subset.
 
 Per-class images are shuffled (with a fixed seed for reproducibility) and
 divided according to TRAIN_RATIO. The result is written as two new
@@ -61,8 +61,8 @@ def populate_split(class_name: str, image_paths: list[Path], split_root: Path, c
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--source", type=Path, default=Path(__file__).parent / "train",
-                         help="Directory containing per-class image folders (default: dataset/train)")
+    parser.add_argument("--source", type=Path, default=Path(__file__).parent / "train_original",
+                         help="Directory containing per-class image folders (default: dataset/train_original)")
     parser.add_argument("--output-root", type=Path, default=Path(__file__).parent,
                          help="Where to create train_split/ and val_split/ (default: dataset/)")
     parser.add_argument("--train-ratio", type=float, default=TRAIN_RATIO,

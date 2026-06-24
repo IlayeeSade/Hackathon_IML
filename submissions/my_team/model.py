@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torchvision.models as models
 
 
 class ModelArchitecture(nn.Module):
@@ -14,26 +15,13 @@ class ModelArchitecture(nn.Module):
     def __init__(self, num_classes: int = 20):
         super().__init__()
 
-        def conv_block(in_channels, out_channels):
-            return nn.Sequential(
-                nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1),
-                nn.BatchNorm2d(out_channels),
-                nn.ReLU(inplace=True),
-                nn.MaxPool2d(2),
-            )
-
-        self.features = nn.Sequential(
-            conv_block(3, 32),
-            conv_block(32, 64),
-            conv_block(64, 128),
-            conv_block(128, 256),
-            nn.AdaptiveAvgPool2d((1, 1)),
-        )
-
-        self.classifier = nn.Sequential(
-            nn.Flatten(),
-            nn.Dropout(0.3),
-            nn.Linear(256, num_classes),
+        self.resnet = models.resnet50(weights=None)
+        
+        in_features = self.resnet.fc.in_features
+        
+        self.resnet.fc = nn.Sequential(
+            nn.Dropout(p=0.3),
+            nn.Linear(in_features, num_classes)
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -46,6 +34,4 @@ class ModelArchitecture(nn.Module):
         Returns:
             logits for 20 classes
         """
-        x = self.features(x)
-        logits = self.classifier(x)
-        return logits
+        return self.resnet(x)

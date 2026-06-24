@@ -1,3 +1,4 @@
+import argparse
 import os
 import sys
 from pathlib import Path
@@ -10,7 +11,6 @@ import torch
 import torch.nn as nn
 
 from torch.utils.data import DataLoader
-from torchvision import transforms
 from tqdm import tqdm
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -19,6 +19,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from base_model import ImageNetSubset
 from model import ModelArchitecture
+from augmentations import build_train_transforms, build_eval_transforms
 
 DATA_ROOT = PROJECT_ROOT / "dataset"
 OUTPUT = SCRIPT_DIR / "weights.joblib"
@@ -27,14 +28,10 @@ PLOT_OUTPUT = SCRIPT_DIR / "training_curves.png"
 TRAIN_SPLIT = "train_split"
 VAL_SPLIT = "val_split"
 
-IMAGE_SIZE = 224
-BATCH_SIZE = 256
+BATCH_SIZE = 192
 EPOCHS = 15
 LEARNING_RATE = 1e-3
 NUM_WORKERS = min(8, os.cpu_count() or 1)
-
-IMAGENET_MEAN = (0.485, 0.456, 0.406)
-IMAGENET_STD = (0.229, 0.224, 0.225)
 
 DEVICE = torch.device(
     "cuda" if torch.cuda.is_available()
@@ -42,28 +39,7 @@ DEVICE = torch.device(
     else "cpu"
 )
 
-def build_transforms():
-    train_transform = transforms.Compose([
-        transforms.RandomResizedCrop(size=IMAGE_SIZE, scale=(0.7, 1.0)),
-        transforms.RandomHorizontalFlip(p=0.5),
-        transforms.RandomRotation(degrees=15),
-        transforms.RandomGrayscale(p=0.2),
-        transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4, hue=0.1),
-        transforms.RandomApply([transforms.GaussianBlur(kernel_size=3)], p=0.2),
-        transforms.ToTensor(),
-        transforms.RandomErasing(p=0.2, scale=(0.02, 0.2), ratio=(0.3, 3.3)),
-        transforms.Normalize(IMAGENET_MEAN, IMAGENET_STD),
-    ])
-
-    eval_transform = transforms.Compose([
-        transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
-        transforms.ToTensor(),
-        transforms.Normalize(IMAGENET_MEAN, IMAGENET_STD),
-    ])
-
-    return train_transform, eval_transform
-
-def run_epoch(model, loader, criterion, optimizer=None, desc=""):
+def run_epoch(model, loader, criterion, optimizer=None, scaler=None, desc=""):
     is_training = optimizer is not None
     model.train(is_training)
 
@@ -75,13 +51,19 @@ def run_epoch(model, loader, criterion, optimizer=None, desc=""):
         labels = labels.to(DEVICE, non_blocking=True)
 
         with torch.set_grad_enabled(is_training):
-            logits = model(images)
-            loss = criterion(logits, labels)
+            with torch.autocast(device_type=DEVICE.type, enabled=DEVICE.type == "cuda"):
+                logits = model(images)
+                loss = criterion(logits, labels)
 
             if is_training:
                 optimizer.zero_grad()
-                loss.backward()
-                optimizer.step()
+                if scaler is not None:
+                    scaler.scale(loss).backward()
+                    scaler.step(optimizer)
+                    scaler.update()
+                else:
+                    loss.backward()
+                    optimizer.step()
 
         total_loss += loss.item() * images.size(0)
         correct += (logits.argmax(dim=1) == labels).sum().item()
@@ -113,10 +95,18 @@ def plot_history(history, path):
     fig.tight_layout()
     fig.savefig(path)
     plt.close(fig)
-# first model # working
+
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--resume", action="store_true",
+                         help=f"Load existing weights from {OUTPUT} before training instead of starting fresh")
+    return parser.parse_args()
+
 def main():
+    args = parse_args()
     print(f"Using device: {DEVICE}")
-    train_transform, eval_transform = build_transforms()
+    train_transform = build_train_transforms()
+    eval_transform = build_eval_transforms()
 
     train_ds = ImageNetSubset(DATA_ROOT, TRAIN_SPLIT, transform=train_transform)
     val_ds = ImageNetSubset(DATA_ROOT, VAL_SPLIT, transform=eval_transform)
@@ -131,16 +121,29 @@ def main():
     val_loader = DataLoader(val_ds, batch_size=BATCH_SIZE, shuffle=False, **loader_kwargs)
 
     model = ModelArchitecture(num_classes=20).to(DEVICE)
+
+    if args.resume:
+        if not OUTPUT.exists():
+            raise FileNotFoundError(f"--resume given but no checkpoint found at {OUTPUT}")
+        model.load_state_dict(joblib.load(OUTPUT))
+        print(f"Resumed weights from {OUTPUT}")
+
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
+    scaler = torch.amp.GradScaler(device=DEVICE.type, enabled=DEVICE.type == "cuda")
 
     best_val_acc = 0.0
     best_state = None
+    if args.resume:
+        _, best_val_acc = run_epoch(model, val_loader, criterion, desc="Resumed checkpoint [val]")
+        best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+        print(f"Resumed checkpoint val_acc={best_val_acc:.4f} (new epochs must beat this to be saved)")
+
     history = {"train_loss": [], "train_acc": [], "val_loss": [], "val_acc": []}
 
     for epoch in tqdm(range(1, EPOCHS + 1), desc="Epochs"):
         train_loss, train_acc = run_epoch(
-            model, train_loader, criterion, optimizer, desc=f"Epoch {epoch}/{EPOCHS} [train]"
+            model, train_loader, criterion, optimizer, scaler, desc=f"Epoch {epoch}/{EPOCHS} [train]"
         )
         val_loss, val_acc = run_epoch(
             model, val_loader, criterion, desc=f"Epoch {epoch}/{EPOCHS} [val]"
