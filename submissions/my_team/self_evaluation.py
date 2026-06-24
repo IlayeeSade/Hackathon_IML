@@ -26,6 +26,9 @@ from sklearn.metrics import confusion_matrix
 from tqdm import tqdm
 import seaborn as sns
 
+NUM_WORKERS = os.cpu_count() // 2
+PIN_MEMORY = torch.cuda.is_available() or torch.backends.mps.is_available()
+
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -114,17 +117,27 @@ class ImageNetSubset(Dataset):
 # ── transforms & loaders ──────────────────────────────────────────────────────
 
 def load_evaluation_suites():
-    """
-    בונה מילון של DataLoaders עבור כל סוגי מבחני הלחץ שהוגדרו.
-    """
-    print("Preparing evaluation suites...")
+    print(f"Preparing evaluation suites (Workers: {NUM_WORKERS}, Pin Memory: {PIN_MEMORY})...")
+    
+    # פונקציית עזר קטנה כדי לא לשכפל את כל הפרמטרים
+    def make_loader(transform, shuffle=False):
+        dataset = ImageNetSubset(DATA_ROOT, transform=transform)
+        return DataLoader(
+            dataset, 
+            batch_size=BATCH_SIZE, 
+            shuffle=shuffle, 
+            num_workers=NUM_WORKERS,
+            pin_memory=PIN_MEMORY,
+            persistent_workers=True if NUM_WORKERS > 0 else False # שומר את התהליכים חיים בין באצ'ים
+        )
+
     suites = {
-        "Base (Clean)  ": DataLoader(ImageNetSubset(DATA_ROOT, transform=build_eval_transforms()), batch_size=BATCH_SIZE, shuffle=False),
-        "Geometric     ": DataLoader(ImageNetSubset(DATA_ROOT, transform=build_geometric_stress_transforms()), batch_size=BATCH_SIZE, shuffle=False),
-        "Color/Photo   ": DataLoader(ImageNetSubset(DATA_ROOT, transform=build_color_stress_transforms()), batch_size=BATCH_SIZE, shuffle=False),
-        "Noise/Occlude ": DataLoader(ImageNetSubset(DATA_ROOT, transform=build_noise_stress_transforms()), batch_size=BATCH_SIZE, shuffle=False),
-        "AutoAugment   ": DataLoader(ImageNetSubset(DATA_ROOT, transform=build_auto_transforms()), batch_size=BATCH_SIZE, shuffle=False), # הסט המבוסס RandAugment שהוספת
-        "Ultimate Combo": DataLoader(ImageNetSubset(DATA_ROOT, transform=build_stress_transforms()), batch_size=BATCH_SIZE, shuffle=True) # Shuffle for visuals
+        "Base (Clean)  ": make_loader(build_eval_transforms(), shuffle=False),
+        "Geometric     ": make_loader(build_geometric_stress_transforms(), shuffle=False),
+        "Color/Photo   ": make_loader(build_color_stress_transforms(), shuffle=False),
+        "Noise/Occlude ": make_loader(build_noise_stress_transforms(), shuffle=False),
+        "AutoAugment   ": make_loader(build_auto_transforms(), shuffle=False),
+        "Ultimate Combo": make_loader(build_stress_transforms(), shuffle=True)
     }
     
     for name, loader in suites.items():

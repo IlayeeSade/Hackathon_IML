@@ -30,8 +30,9 @@ TRAIN_SPLIT = "train_split"
 VAL_SPLIT = "val_split"
 
 BATCH_SIZE = 192
-EPOCHS = 15
+EPOCHS = 50
 LEARNING_RATE = 1e-3
+WEIGHT_DECAY = 1e-4
 NUM_WORKERS = min(8, os.cpu_count() or 1)
 
 DEVICE = torch.device(
@@ -139,7 +140,7 @@ def main():
         print(f"Resumed weights from {OUTPUT}")
 
     criterion = nn.CrossEntropyLoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
     scaler = torch.amp.GradScaler(device=DEVICE.type, enabled=DEVICE.type == "cuda")
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=2)
 
