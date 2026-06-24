@@ -1,2 +1,0 @@
-fraction,arch,train_best_val_acc,train_time_min,self_eval_base_acc,self_eval_avg_stress,self_eval_final_score
-0.02,resnet50,0.0499375,0.542326299349467,0.05,0.05,0.05
