@@ -30,10 +30,15 @@ def apply_cutmix(images, labels, alpha=1.0):
     return images, target_a, target_b, lam
 
 def build_train_transforms():
-    # RandAugment automates the selection of intensity, RandomErasing enforces local feature learning
     return transforms.Compose([
         transforms.RandomResizedCrop(size=IMAGE_SIZE, scale=(0.7, 1.0)),
         transforms.RandomHorizontalFlip(p=0.5),
+        transforms.RandomApply([
+            transforms.ColorJitter(brightness=0.5, contrast=0.5, saturation=0.5, hue=0.3)
+        ], p=0.8),
+        transforms.RandomGrayscale(p=0.25),
+        transforms.RandomAutocontrast(p=0.2),
+        transforms.RandomAdjustSharpness(sharpness_factor=2, p=0.2),
         transforms.RandAugment(num_ops=2, magnitude=9),
         transforms.ToTensor(),
         transforms.RandomErasing(p=0.5, scale=(0.05, 0.3), ratio=(0.3, 3.3)),
@@ -47,7 +52,6 @@ def build_eval_transforms():
         transforms.Normalize(IMAGENET_MEAN, IMAGENET_STD),
     ])
 
-# Stress test functions remain for your testing suite
 def build_geometric_stress_transforms():
     return transforms.Compose([
         transforms.RandomResizedCrop(size=IMAGE_SIZE, scale=(0.5, 1.0)),

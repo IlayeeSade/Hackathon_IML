@@ -30,7 +30,7 @@ TRAIN_SPLIT = "train_split"
 VAL_SPLIT = "val_split"
 
 BATCH_SIZE = 128
-EPOCHS = 50
+EPOCHS = 150
 LEARNING_RATE = 1e-3
 WEIGHT_DECAY = 1e-4
 NUM_WORKERS = min(8, os.cpu_count() or 1)
@@ -110,9 +110,9 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--resume", action="store_true",
                          help=f"Load existing weights from {OUTPUT} before training instead of starting fresh")
-    parser.add_argument("--save-best", choices=["acc", "loss"], default="acc",
-                         help="Checkpoint metric: keep the epoch with the highest val_acc (default) "
-                              "or the lowest val_loss")
+    parser.add_argument("--save-best", choices=["acc", "loss"], default="loss",
+                         help="Checkpoint metric: keep the epoch with the lowest val_loss (default) "
+                              "or the highest val_acc")
     parser.add_argument("--eval-clean-train", action="store_true",
                          help="Each epoch, also evaluate train_acc on train_split with eval "
                               "(non-augmented) transforms, separate from the augmented train_acc "
@@ -153,7 +153,8 @@ def main():
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
     scaler = torch.amp.GradScaler(device=DEVICE.type, enabled=DEVICE.type == "cuda")
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=2)
+    
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=EPOCHS, eta_min=1e-6)
 
     track_loss = args.save_best == "loss"
     best_metric = float("inf") if track_loss else 0.0
@@ -194,8 +195,7 @@ def main():
             history["clean_train_acc"].append(clean_train_acc)
             clean_train_acc_str = f" | clean_train_acc {clean_train_acc:.4f}"
 
-        lr_before = optimizer.param_groups[0]["lr"]
-        scheduler.step(val_loss)
+        scheduler.step()
         lr_after = optimizer.param_groups[0]["lr"]
 
         tqdm.write(
@@ -203,8 +203,6 @@ def main():
             f"train_loss {train_loss:.4f} train_acc {train_acc:.4f} | "
             f"val_loss {val_loss:.4f} val_acc {val_acc:.4f}{clean_train_acc_str} | lr {lr_after:.2e}"
         )
-        if lr_after < lr_before:
-            tqdm.write(f"  > val_loss plateaued, reducing LR {lr_before:.2e} -> {lr_after:.2e}")
 
         if is_better(val_loss, val_acc, best_metric):
             best_metric = val_loss if track_loss else val_acc

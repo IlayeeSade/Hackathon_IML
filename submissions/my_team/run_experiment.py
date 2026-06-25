@@ -80,16 +80,22 @@ def make_fraction_subset(dataset: ImageNetSubset, fraction: float, seed: int) ->
 
 
 def train_one_arch(arch: str, args, train_loader, val_loader, out_dir: Path):
-    print(f"\n=== Training {arch} | fraction={args.fraction} epochs={args.epochs} ===")
+    schedule_epochs = args.schedule_epochs or args.epochs
+    print(
+        f"\n=== Training {arch} | fraction={args.fraction} epochs={args.epochs} "
+        f"(cosine T_max={schedule_epochs}) ==="
+    )
     model = build_model(arch).to(DEVICE)
 
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     scaler = torch.amp.GradScaler(device=DEVICE.type, enabled=DEVICE.type == "cuda")
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=2)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=schedule_epochs, eta_min=1e-6)
 
     history = {"train_loss": [], "train_acc": [], "val_loss": [], "val_acc": []}
-    best_val_acc = 0.0
+    best_val_loss = float("inf")
+    best_val_acc = 0.0  # val_acc at the best-val_loss checkpoint, for reporting
+    best_epoch = 0
     best_state = None
     start = time.time()
 
@@ -106,7 +112,7 @@ def train_one_arch(arch: str, args, train_loader, val_loader, out_dir: Path):
         history["val_loss"].append(val_loss)
         history["val_acc"].append(val_acc)
 
-        scheduler.step(val_loss)
+        scheduler.step()
 
         print(
             f"[{arch}] Epoch {epoch:2d}/{args.epochs} | "
@@ -115,8 +121,10 @@ def train_one_arch(arch: str, args, train_loader, val_loader, out_dir: Path):
             f"lr {optimizer.param_groups[0]['lr']:.2e}"
         )
 
-        if val_acc > best_val_acc:
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
             best_val_acc = val_acc
+            best_epoch = epoch
             best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
 
     elapsed = time.time() - start
@@ -126,11 +134,14 @@ def train_one_arch(arch: str, args, train_loader, val_loader, out_dir: Path):
     joblib.dump(best_state if best_state is not None else model.state_dict(), weights_path)
     plot_history(history, curves_path)
 
-    print(f"[{arch}] done in {elapsed/60:.1f} min | best val_acc={best_val_acc:.4f}")
+    print(
+        f"[{arch}] done in {elapsed/60:.1f} min | best epoch={best_epoch}/{args.epochs} "
+        f"val_loss={best_val_loss:.4f} (val_acc={best_val_acc:.4f})"
+    )
     print(f"[{arch}] weights -> {weights_path}")
     print(f"[{arch}] curves  -> {curves_path}")
 
-    return best_val_acc, elapsed
+    return best_val_acc, best_epoch, elapsed
 
 
 def parse_args():
@@ -138,6 +149,9 @@ def parse_args():
     parser.add_argument("--fraction", type=float, default=1.0,
                          help="Fraction of train_split to use, per class (0-1, default 1.0)")
     parser.add_argument("--epochs", type=int, default=10, help="Number of epochs (default 10)")
+    parser.add_argument("--schedule-epochs", type=int, default=None,
+                         help="T_max for the cosine LR schedule (default: same as --epochs). "
+                              "Set higher than --epochs to stop partway through a longer-shaped decay curve.")
     parser.add_argument("--arch", choices=["convnext", "resnet50", "both"], default="both",
                          help="Which architecture(s) to train (default: both)")
     parser.add_argument("--batch-size", type=int, default=128)
@@ -179,12 +193,12 @@ def main():
     archs = ["convnext", "resnet50"] if args.arch == "both" else [args.arch]
     results = {}
     for arch in archs:
-        best_val_acc, elapsed = train_one_arch(arch, args, train_loader, val_loader, out_dir)
-        results[arch] = (best_val_acc, elapsed)
+        best_val_acc, best_epoch, elapsed = train_one_arch(arch, args, train_loader, val_loader, out_dir)
+        results[arch] = (best_val_acc, best_epoch, elapsed)
 
     print(f"\n=== Summary (fraction={args.fraction}, epochs={args.epochs}) ===")
-    for arch, (best_val_acc, elapsed) in results.items():
-        print(f"  {arch:10s} best_val_acc={best_val_acc:.4f}  time={elapsed/60:.1f} min")
+    for arch, (best_val_acc, best_epoch, elapsed) in results.items():
+        print(f"  {arch:10s} best_epoch={best_epoch}  best_val_acc={best_val_acc:.4f}  time={elapsed/60:.1f} min")
     print(f"Results saved under {out_dir}")
 
 

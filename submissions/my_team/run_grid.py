@@ -10,6 +10,7 @@ Usage:
 """
 import argparse
 import csv
+import subprocess
 import sys
 import time
 from datetime import datetime
@@ -81,7 +82,38 @@ def run_self_eval(net, suites, arch, fraction, epochs, log_path):
     return scores
 
 
-def write_summary(out_dir, arch, fraction, epochs, args, best_val_acc, elapsed, eval_scores, weights_path, curves_path):
+def append_csv_row(csv_path: Path, row: dict):
+    write_header = not csv_path.exists()
+    with csv_path.open("a", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=list(row.keys()))
+        if write_header:
+            writer.writeheader()
+        writer.writerow(row)
+
+
+def git_commit_and_push(paths, message):
+    """Commit and push the given run's artifacts. Logs but does not raise on failure,
+    so a flaky push never aborts the rest of the grid."""
+    existing = [str(p) for p in paths if Path(p).exists()]
+    if not existing:
+        return
+    try:
+        subprocess.run(["git", "add", *existing], cwd=PROJECT_ROOT, check=True)
+        status = subprocess.run(
+            ["git", "status", "--porcelain", *existing],
+            cwd=PROJECT_ROOT, capture_output=True, text=True, check=True,
+        )
+        if not status.stdout.strip():
+            print("  (nothing changed, skipping commit)")
+            return
+        subprocess.run(["git", "commit", "-m", message], cwd=PROJECT_ROOT, check=True)
+        subprocess.run(["git", "push", "origin", "main"], cwd=PROJECT_ROOT, check=True)
+        print(f"  Committed and pushed: {message}")
+    except subprocess.CalledProcessError as e:
+        print(f"  WARNING: git commit/push failed ({e}); continuing with the grid.")
+
+
+def write_summary(out_dir, arch, fraction, epochs, args, best_val_acc, best_epoch, elapsed, eval_scores, weights_path, curves_path):
     doc_path = out_dir / f"{arch}_summary.md"
     lines = [
         f"# {arch} — fraction={fraction}, epochs={epochs}",
@@ -91,6 +123,7 @@ def write_summary(out_dir, arch, fraction, epochs, args, best_val_acc, elapsed, 
         f"- lr: {args.lr}",
         f"- weight_decay: {args.weight_decay}",
         f"- seed: {args.seed}",
+        f"- best epoch (lowest val_loss): {best_epoch}/{epochs}",
         f"- best val_acc (training): {best_val_acc:.4f}",
         f"- training time: {elapsed/60:.1f} min",
         f"- weights: {weights_path.name}",
@@ -113,6 +146,8 @@ def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--fractions", type=float, nargs="+", default=[0.5, 0.8])
     parser.add_argument("--epochs", type=int, default=100)
+    parser.add_argument("--schedule-epochs", type=int, default=None,
+                         help="T_max for the cosine LR schedule (default: same as --epochs)")
     parser.add_argument("--archs", nargs="+", choices=["convnext", "resnet50"], default=["convnext", "resnet50"])
     parser.add_argument("--batch-size", type=int, default=128)
     parser.add_argument("--lr", type=float, default=1e-3)
@@ -142,6 +177,7 @@ def main():
     suites = se.load_evaluation_suites()
 
     OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
+    summary_csv = OUTPUT_ROOT / "grid_summary.csv"
     grid_rows = []
 
     for fraction in args.fractions:
@@ -154,7 +190,7 @@ def main():
         out_dir.mkdir(parents=True, exist_ok=True)
 
         for arch in args.archs:
-            best_val_acc, elapsed = exp.train_one_arch(arch, args, train_loader, val_loader, out_dir)
+            best_val_acc, best_epoch, elapsed = exp.train_one_arch(arch, args, train_loader, val_loader, out_dir)
 
             weights_path = out_dir / f"{arch}_weights.joblib"
             curves_path = out_dir / f"{arch}_curves.png"
@@ -168,11 +204,11 @@ def main():
             )
             doc_path = write_summary(
                 out_dir, arch, fraction, args.epochs, args,
-                best_val_acc, elapsed, eval_scores, weights_path, curves_path,
+                best_val_acc, best_epoch, elapsed, eval_scores, weights_path, curves_path,
             )
             print(f"[{arch} f={fraction}] summary -> {doc_path}")
 
-            grid_rows.append({
+            row = {
                 "fraction": fraction,
                 "arch": arch,
                 "train_best_val_acc": best_val_acc,
@@ -180,13 +216,18 @@ def main():
                 "self_eval_base_acc": eval_scores.get("Base (Clean)  ", 0.0),
                 "self_eval_avg_stress": eval_scores["Avg Stress"],
                 "self_eval_final_score": eval_scores["Final Score"],
-            })
+            }
+            grid_rows.append(row)
+            append_csv_row(summary_csv, row)
 
-    summary_csv = OUTPUT_ROOT / "grid_summary.csv"
-    with summary_csv.open("w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=list(grid_rows[0].keys()))
-        writer.writeheader()
-        writer.writerows(grid_rows)
+            print(f"\n--- Committing {arch} (fraction={fraction}) results ---")
+            git_commit_and_push(
+                [weights_path, curves_path, out_dir / f"{arch}_self_eval.log", doc_path, summary_csv],
+                message=(
+                    f"Train {arch} on {fraction:.0%} data, {args.epochs} epochs "
+                    f"(val_acc={best_val_acc:.4f}, final_score={row['self_eval_final_score']:.4f})"
+                ),
+            )
 
     total_elapsed = time.time() - grid_start
     print("\n" + "=" * 70)
