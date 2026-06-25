@@ -1,6 +1,9 @@
-dataset/train_original/
-dataset/train_split/
-dataset/val_split/
-dataset/.DS_Store
+project/dataset/train_original/
+project/dataset/train_split/
+project/dataset/val_split/
+project/dataset/validation/
+project/dataset/train_split_leaked_backup/
+project/dataset/val_split_leaked_backup/
+project/dataset/.DS_Store
 __pycache__/
 *.pyc
